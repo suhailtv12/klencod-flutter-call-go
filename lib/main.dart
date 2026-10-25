@@ -4,13 +4,14 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:agora_rtc_engine/agora_rtc_engine.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
-// --- الثوابت العامة ---
+// --- معرّف التطبيق الخاص بك في Agora ---
 const String AGORA_APP_ID = "2a0053e48b774c279c834793732a7493";
 
-void main() {
+void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
+  await SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
   runApp(const SafePulseApp());
 }
 
@@ -20,15 +21,15 @@ class SafePulseApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'SafePulse Connect',
+      title: 'Call Go P2P',
       debugShowCheckedModeBanner: false,
       theme: ThemeData.dark().copyWith(
-        scaffoldBackgroundColor: const Color(0xFF0A0E17),
+        scaffoldBackgroundColor: const Color(0xFF090D16),
         colorScheme: const ColorScheme.dark(
           primary: Color(0xFF00E5FF),
           secondary: Color(0xFF1DE9B6),
           error: Color(0xFFFF5252),
-          surface: Color(0xFF141C2E),
+          surface: Color(0xFF131B2E),
         ),
       ),
       home: const HomeScreen(),
@@ -37,7 +38,7 @@ class SafePulseApp extends StatelessWidget {
 }
 
 // -------------------------------------------------------------
-// الشاشة الرئيسية: إنشاء كود مؤقت أو الانضمام لمكالمة
+// الشاشة الرئيسية
 // -------------------------------------------------------------
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -48,65 +49,83 @@ class HomeScreen extends StatefulWidget {
 
 class _HomeScreenState extends State<HomeScreen> {
   final TextEditingController _codeController = TextEditingController();
+  final TextEditingController _tokenController = TextEditingController();
   bool _isVideo = true;
+  bool _showTokenField = false;
 
-  // توليد كود مؤقت من 6 أرقام
+  @override
+  void initState() {
+    super.initState();
+    _loadSavedToken();
+  }
+
+  Future<void> _loadSavedToken() async {
+    final prefs = await SharedPreferences.getInstance();
+    final savedToken = prefs.getString('saved_agora_token');
+    if (savedToken != null && savedToken.isNotEmpty) {
+      setState(() {
+        _tokenController.text = savedToken;
+        _showTokenField = true;
+      });
+    }
+  }
+
+  Future<void> _saveToken(String token) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('saved_agora_token', token.trim());
+  }
+
   String _generateTempCode() {
     final random = Random();
     return (100000 + random.nextInt(900000)).toString();
   }
 
-  void _triggerHaptic(HapticFeedbackType type) {
-    switch (type) {
-      case HapticFeedbackType.light:
-        HapticFeedback.lightImpact();
-        break;
-      case HapticFeedbackType.heavy:
-        HapticFeedback.heavyImpact();
-        break;
-      case HapticFeedbackType.selection:
-        HapticFeedback.selectionClick();
-        break;
-    }
-  }
-
   Future<void> _startCall(String channelCode) async {
-    if (channelCode.trim().length < 4) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text("يرجى إدخال رمز صحيح (4 أرقام على الأقل)"),
-          backgroundColor: Colors.redAccent,
-        ),
-      );
+    final code = channelCode.trim();
+    if (code.length < 3) {
+      _showSnackbar("يرجى إدخال رمز اتصال صالح (3 خانات على الأقل)", Colors.redAccent);
       return;
     }
 
-    _triggerHaptic(HapticFeedbackType.heavy);
+    HapticFeedback.heavyImpact();
+    await _saveToken(_tokenController.text);
 
-    // التحقق من الصلاحيات
-    final statusCam = await Permission.camera.request();
-    final statusMic = await Permission.microphone.request();
+    Map<Permission, PermissionStatus> statuses = await [
+      Permission.microphone,
+      if (_isVideo) Permission.camera,
+    ].request();
 
-    if (statusMic.isGranted && (statusCam.isGranted || !_isVideo)) {
+    bool micGranted = statuses[Permission.microphone]?.isGranted ?? false;
+    bool camGranted = !_isVideo || (statuses[Permission.camera]?.isGranted ?? false);
+
+    if (micGranted && camGranted) {
       if (!mounted) return;
       Navigator.push(
         context,
         MaterialPageRoute(
           builder: (context) => CallScreen(
-            channelId: channelCode.trim(),
+            channelId: code,
+            token: _tokenController.text.trim(),
             isVideoCall: _isVideo,
           ),
         ),
       );
     } else {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text("يجب منح صلاحيات الكاميرا والمايك للبدء"),
-          backgroundColor: Colors.redAccent,
-        ),
-      );
+      _showSnackbar("يجب منح صلاحيات الصوت والكاميرا للمتابعة", Colors.redAccent);
     }
+  }
+
+  void _showSnackbar(String msg, Color color) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(msg), backgroundColor: color),
+    );
+  }
+
+  @override
+  void dispose() {
+    _codeController.dispose();
+    _tokenController.dispose();
+    super.dispose();
   }
 
   @override
@@ -118,82 +137,66 @@ class _HomeScreenState extends State<HomeScreen> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.center,
             children: [
-              const SizedBox(height: 30),
-              // شعار وعنوان التطبيق
+              const SizedBox(height: 20),
               Center(
                 child: Container(
                   padding: const EdgeInsets.all(20),
                   decoration: BoxDecoration(
                     shape: BoxShape.circle,
                     color: const Color(0xFF00E5FF).withOpacity(0.1),
-                    border: Border.all(
-                      color: const Color(0xFF00E5FF).withOpacity(0.3),
-                      width: 2,
-                    ),
+                    border: Border.all(color: const Color(0xFF00E5FF).withOpacity(0.35), width: 2),
+                    boxShadow: [
+                      BoxShadow(
+                        color: const Color(0xFF00E5FF).withOpacity(0.15),
+                        blurRadius: 20,
+                        spreadRadius: 2,
+                      )
+                    ],
                   ),
-                  child: const Icon(
-                    Icons.security_rounded,
-                    size: 55,
-                    color: Color(0xFF00E5FF),
-                  ),
+                  child: const Icon(Icons.shield_outlined, size: 55, color: Color(0xFF00E5FF)),
                 ),
               ),
-              const SizedBox(height: 20),
+              const SizedBox(height: 16),
               const Text(
-                "SafePulse P2P",
-                style: TextStyle(
-                  fontSize: 28,
-                  fontWeight: FontWeight.bold,
-                  letterSpacing: 1.2,
-                ),
+                "Call Go P2P",
+                style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold, letterSpacing: 1.2),
               ),
-              const SizedBox(height: 8),
+              const SizedBox(height: 6),
               const Text(
-                "اتصال فوري مشفر ومؤقت لشخصين فقط",
-                style: TextStyle(fontSize: 14, color: Colors.white60),
+                "اتصال فوري ومؤمن لشخصين فقط",
+                style: TextStyle(fontSize: 14, color: Colors.white54),
               ),
-              const SizedBox(height: 40),
+              const SizedBox(height: 30),
 
-              // نوع المكالمة (فيديو أو صوت)
+              // اختيار نوع المكالمة (فيديو أو صوت)
               Container(
                 decoration: BoxDecoration(
-                  color: const Color(0xFF141C2E),
+                  color: const Color(0xFF131B2E),
                   borderRadius: BorderRadius.circular(16),
                   border: Border.all(color: Colors.white10),
                 ),
-                padding: const EdgeInsets.all(6),
+                padding: const EdgeInsets.all(5),
                 child: Row(
                   children: [
                     Expanded(
                       child: GestureDetector(
                         onTap: () {
-                          _triggerHaptic(HapticFeedbackType.selection);
+                          HapticFeedback.selectionClick();
                           setState(() => _isVideo = true);
                         },
                         child: AnimatedContainer(
-                          duration: const Duration(milliseconds: 250),
+                          duration: const Duration(milliseconds: 200),
                           padding: const EdgeInsets.symmetric(vertical: 12),
                           decoration: BoxDecoration(
-                            color: _isVideo
-                                ? const Color(0xFF00E5FF)
-                                : Colors.transparent,
+                            color: _isVideo ? const Color(0xFF00E5FF) : Colors.transparent,
                             borderRadius: BorderRadius.circular(12),
                           ),
                           child: Row(
                             mainAxisAlignment: MainAxisAlignment.center,
                             children: [
-                              Icon(
-                                Icons.videocam_rounded,
-                                color: _isVideo ? Colors.black : Colors.white60,
-                              ),
+                              Icon(Icons.videocam_rounded, color: _isVideo ? Colors.black : Colors.white60, size: 20),
                               const SizedBox(width: 8),
-                              Text(
-                                "مكالمة فيديو",
-                                style: TextStyle(
-                                  fontWeight: FontWeight.bold,
-                                  color: _isVideo ? Colors.black : Colors.white60,
-                                ),
-                              ),
+                              Text("مكالمة فيديو", style: TextStyle(fontWeight: FontWeight.bold, color: _isVideo ? Colors.black : Colors.white60)),
                             ],
                           ),
                         ),
@@ -202,33 +205,22 @@ class _HomeScreenState extends State<HomeScreen> {
                     Expanded(
                       child: GestureDetector(
                         onTap: () {
-                          _triggerHaptic(HapticFeedbackType.selection);
+                          HapticFeedback.selectionClick();
                           setState(() => _isVideo = false);
                         },
                         child: AnimatedContainer(
-                          duration: const Duration(milliseconds: 250),
+                          duration: const Duration(milliseconds: 200),
                           padding: const EdgeInsets.symmetric(vertical: 12),
                           decoration: BoxDecoration(
-                            color: !_isVideo
-                                ? const Color(0xFF00E5FF)
-                                : Colors.transparent,
+                            color: !_isVideo ? const Color(0xFF00E5FF) : Colors.transparent,
                             borderRadius: BorderRadius.circular(12),
                           ),
                           child: Row(
                             mainAxisAlignment: MainAxisAlignment.center,
                             children: [
-                              Icon(
-                                Icons.call_rounded,
-                                color: !_isVideo ? Colors.black : Colors.white60,
-                              ),
+                              Icon(Icons.call_rounded, color: !_isVideo ? Colors.black : Colors.white60, size: 20),
                               const SizedBox(width: 8),
-                              Text(
-                                "مكالمة صوت",
-                                style: TextStyle(
-                                  fontWeight: FontWeight.bold,
-                                  color: !_isVideo ? Colors.black : Colors.white60,
-                                ),
-                              ),
+                              Text("مكالمة صوت", style: TextStyle(fontWeight: FontWeight.bold, color: !_isVideo ? Colors.black : Colors.white60)),
                             ],
                           ),
                         ),
@@ -237,7 +229,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   ],
                 ),
               ),
-              const SizedBox(height: 35),
+              const SizedBox(height: 25),
 
               // زر توليد كود جديد للمتصل
               ElevatedButton.icon(
@@ -247,93 +239,82 @@ class _HomeScreenState extends State<HomeScreen> {
                   _startCall(newCode);
                 },
                 icon: const Icon(Icons.bolt_rounded, color: Colors.black),
-                label: const Text(
-                  "توليد كود وبدء اتصال جديد",
-                  style: TextStyle(
-                    fontSize: 16,
-                    fontWeight: FontWeight.bold,
-                    color: Colors.black,
-                  ),
-                ),
+                label: const Text("توليد كود وبدء اتصال جديد", style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.black)),
                 style: ElevatedButton.styleFrom(
                   backgroundColor: const Color(0xFF00E5FF),
-                  minimumSize: const Size(double.infinity, 56),
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(16),
-                  ),
-                  elevation: 5,
-                  shadowColor: const Color(0xFF00E5FF).withOpacity(0.4),
+                  minimumSize: const Size(double.infinity, 54),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                  elevation: 6,
                 ),
               ),
-              const SizedBox(height: 30),
+              const SizedBox(height: 25),
 
               Row(
                 children: const [
                   Expanded(child: Divider(color: Colors.white24)),
-                  Padding(
-                    padding: EdgeInsets.symmetric(horizontal: 16.0),
-                    child: Text("أو الانضمام بكود مستلم",
-                        style: TextStyle(color: Colors.white38)),
-                  ),
+                  Padding(padding: EdgeInsets.symmetric(horizontal: 12), child: Text("أو الانضمام بكود الغرفة", style: TextStyle(color: Colors.white38, fontSize: 13))),
                   Expanded(child: Divider(color: Colors.white24)),
                 ],
               ),
-              const SizedBox(height: 25),
+              const SizedBox(height: 20),
 
-              // حقل إدخال الكود المستلم
+              // حقل إدخال الكود
               TextField(
                 controller: _codeController,
-                keyboardType: TextInputType.number,
                 textAlign: TextAlign.center,
-                style: const TextStyle(
-                  fontSize: 22,
-                  letterSpacing: 4,
-                  fontWeight: FontWeight.bold,
-                ),
+                style: const TextStyle(fontSize: 22, letterSpacing: 4, fontWeight: FontWeight.bold),
                 decoration: InputDecoration(
-                  hintText: "أدخل الكود (6 أرقام)",
-                  hintStyle: const TextStyle(
-                    fontSize: 15,
-                    letterSpacing: 0,
-                    color: Colors.white30,
-                  ),
+                  hintText: "أدخل الكود (مثال: 458920)",
+                  hintStyle: const TextStyle(fontSize: 14, letterSpacing: 0, color: Colors.white30),
                   filled: true,
-                  fillColor: const Color(0xFF141C2E),
-                  border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(16),
-                    borderSide: BorderSide.none,
-                  ),
+                  fillColor: const Color(0xFF131B2E),
+                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(14), borderSide: BorderSide.none),
                   focusedBorder: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(16),
-                    borderSide: const BorderSide(
-                      color: Color(0xFF00E5FF),
-                      width: 1.5,
-                    ),
+                    borderRadius: BorderRadius.circular(14),
+                    borderSide: const BorderSide(color: Color(0xFF00E5FF), width: 1.5),
                   ),
                 ),
               ),
-              const SizedBox(height: 16),
+              const SizedBox(height: 14),
 
-              // زر الانضمام
+              // زر الانضمام بكود
               OutlinedButton.icon(
                 onPressed: () => _startCall(_codeController.text),
                 icon: const Icon(Icons.login_rounded, color: Color(0xFF00E5FF)),
-                label: const Text(
-                  "الانضمام للغرفة",
-                  style: TextStyle(
-                    fontSize: 16,
-                    color: Color(0xFF00E5FF),
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
+                label: const Text("الانضمام للغرفة", style: TextStyle(fontSize: 16, color: Color(0xFF00E5FF), fontWeight: FontWeight.bold)),
                 style: OutlinedButton.styleFrom(
-                  minimumSize: const Size(double.infinity, 56),
+                  minimumSize: const Size(double.infinity, 54),
                   side: const BorderSide(color: Color(0xFF00E5FF)),
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(16),
-                  ),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
                 ),
               ),
+              const SizedBox(height: 20),
+
+              // قسم التوكن (لحالات مشاريع App Certificate)
+              TextButton.icon(
+                onPressed: () => setState(() => _showTokenField = !_showTokenField),
+                icon: Icon(_showTokenField ? Icons.keyboard_arrow_up : Icons.security, size: 16, color: Colors.white38),
+                label: Text(
+                  _showTokenField ? "إخفاء حقل Token" : "إعدادات الأمان المتقدمة (Agora Token)",
+                  style: const TextStyle(color: Colors.white38, fontSize: 13),
+                ),
+              ),
+              if (_showTokenField)
+                Padding(
+                  padding: const EdgeInsets.only(top: 8.0),
+                  child: TextField(
+                    controller: _tokenController,
+                    maxLines: 2,
+                    style: const TextStyle(fontSize: 12),
+                    decoration: InputDecoration(
+                      hintText: "الصق هنا الـ Token المشفر (إذا كان مشروعك يتطلب توكن)",
+                      hintStyle: const TextStyle(fontSize: 12, color: Colors.white24),
+                      filled: true,
+                      fillColor: const Color(0xFF131B2E),
+                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
+                    ),
+                  ),
+                ),
             ],
           ),
         ),
@@ -342,18 +323,18 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 }
 
-enum HapticFeedbackType { light, heavy, selection }
-
 // -------------------------------------------------------------
-// شاشة المكالمة: صوت/فيديو مع دعم الجودة التكيفية وتأثير الرنين
+// شاشة المكالمة: صوت/فيديو مع دعم الجودة التكيفية ومؤثرات الرنين
 // -------------------------------------------------------------
 class CallScreen extends StatefulWidget {
   final String channelId;
+  final String token;
   final bool isVideoCall;
 
   const CallScreen({
     super.key,
     required this.channelId,
+    required this.token,
     required this.isVideoCall,
   });
 
@@ -367,14 +348,13 @@ class _CallScreenState extends State<CallScreen> with SingleTickerProviderStateM
   int? _remoteUid;
   bool _isMuted = false;
   bool _isVideoDisabled = false;
-  bool _isFrontCamera = true;
+  bool _isSpeaker = true;
+  String _statusMessage = "جاري الاتصال بخوادم Agora...";
+  String? _errorMessage;
   QualityType _networkQuality = QualityType.qualityUnknown;
 
-  // توقيت المكالمة
   Timer? _callTimer;
   int _secondsElapsed = 0;
-
-  // تأثير الرنين الاهتزازي والبصري
   late AnimationController _pulseController;
   Timer? _ringToneHapticTimer;
 
@@ -388,19 +368,14 @@ class _CallScreenState extends State<CallScreen> with SingleTickerProviderStateM
       duration: const Duration(seconds: 1),
     )..repeat(reverse: true);
 
-    _startRingtoneEffect();
+    _startRingtoneHaptic();
     _initAgora();
   }
 
-  // محاكاة نغمة الرنين عبر نمط اهتزاز احترافي دوري (Haptic Ring Effect)
-  void _startRingtoneEffect() {
-    _ringToneHapticTimer = Timer.periodic(const Duration(milliseconds: 1400), (timer) {
+  void _startRingtoneHaptic() {
+    _ringToneHapticTimer = Timer.periodic(const Duration(milliseconds: 1500), (timer) {
       if (_remoteUid == null) {
-        // نمط رنين ثنائي
         HapticFeedback.heavyImpact();
-        Future.delayed(const Duration(milliseconds: 180), () {
-          HapticFeedback.lightImpact();
-        });
       } else {
         timer.cancel();
       }
@@ -408,86 +383,117 @@ class _CallScreenState extends State<CallScreen> with SingleTickerProviderStateM
   }
 
   Future<void> _initAgora() async {
-    // 1. إنشاء وتهيئة المحرك
-    _engine = createAgoraRtcEngine();
-    await _engine.initialize(const RtcEngineContext(
-      appId: AGORA_APP_ID,
-      channelProfile: ChannelProfileType.channelProfileCommunication,
-    ));
+    try {
+      _engine = createAgoraRtcEngine();
+      await _engine.initialize(const RtcEngineContext(
+        appId: AGORA_APP_ID,
+        channelProfile: ChannelProfileType.channelProfileCommunication,
+      ));
 
-    // 2. إعدادات الجودة التكيفية لمنع انقطاع الاتصال عند ضعف الإنترنت
-    if (widget.isVideoCall) {
-      await _engine.enableVideo();
-      await _engine.startPreview();
+      _engine.registerEventHandler(
+        RtcEngineEventHandler(
+          onJoinChannelSuccess: (RtcConnection connection, int elapsed) {
+            if (!mounted) return;
+            setState(() {
+              _localUserJoined = true;
+              _statusMessage = "تم الانضمام للغرفة! بانتظار الطرف الآخر...";
+            });
+          },
+          onUserJoined: (RtcConnection connection, int remoteUid, int elapsed) {
+            // أمان الغرفة: شخصان فقط (إذا دخل طرف ثالث يخرج تلقائياً)
+            if (_remoteUid != null) {
+              _leaveCall(notice: "الغرفة محجوزة لشخصين فقط!");
+              return;
+            }
 
-      // ضبط ترميز الفيديو التكيفي التلقائي
-      await _engine.setVideoEncoderConfiguration(
-        const VideoEncoderConfiguration(
-          dimensions: VideoDimensions(width: 640, height: 360), // دقة ذكية متوازنة
-          frameRate: 20,
-          bitrate: 0, // 0 يعني أن الماكينة تحدد أفضل معدل نقل تلقائياً
-          degradationPreference: DegradationPreference.maintainBalanced, // توازن الفريمات والدقة
+            HapticFeedback.vibrate();
+            if (!mounted) return;
+            setState(() {
+              _remoteUid = remoteUid;
+              _statusMessage = "تم الاتصال بنجاح";
+            });
+            _startTimer();
+            _ringToneHapticTimer?.cancel();
+          },
+          onUserOffline: (RtcConnection connection, int remoteUid, UserOfflineReasonType reason) {
+            _leaveCall(notice: "انتهت المكالمة من الطرف الآخر");
+          },
+          onNetworkQuality: (RtcConnection connection, int uid, QualityType txQuality, QualityType rxQuality) {
+            if (uid == 0 || uid == _remoteUid) {
+              if (mounted) setState(() => _networkQuality = rxQuality);
+            }
+          },
+          onConnectionStateChanged: (RtcConnection connection, ConnectionStateType state, ConnectionChangedReasonType reason) {
+            if (state == ConnectionStateType.connectionStateFailed) {
+              if (mounted) {
+                setState(() {
+                  _errorMessage = "فشل الاتصال ($reason). تأكد من صحة التوكن أو إعدادات المشروع!";
+                });
+              }
+            }
+          },
+          onError: (ErrorCodeType err, String msg) {
+            if (err == ErrorCodeType.errInvalidToken || err == ErrorCodeType.errTokenExpired) {
+              if (mounted) {
+                setState(() {
+                  _errorMessage = "مشروعك يتطلب Token! يرجى إدخال التوكن في الشاشة الرئيسية أو تعطيل App Certificate في Agora.";
+                });
+              }
+            }
+          },
         ),
       );
 
-      // في حال انخفاض الشبكة لدرجة حرجة: يتحول تلقائياً للصوت فقط لحماية المكالمة من الانقطاع
-      await _engine.setRemoteSubscribeFallbackOption(
-        StreamFallbackOptions.streamFallbackOptionAudioOnly,
-      );
-    } else {
+      // تفعيل الصوت وضبط السماعة الخارجية افتراضياً
       await _engine.enableAudio();
+      await _engine.setEnableSpeakerphone(_isSpeaker);
+
+      // تفعيل الكاميرا وإعدادات الجودة التكيفية لمنع انقطاع المكالمة
+      if (widget.isVideoCall) {
+        await _engine.enableVideo();
+        await _engine.startPreview();
+
+        await _engine.setVideoEncoderConfiguration(
+          const VideoEncoderConfiguration(
+            dimensions: VideoDimensions(width: 640, height: 360),
+            frameRate: 15,
+            bitrate: 0,
+            degradationPreference: DegradationPreference.maintainBalanced,
+          ),
+        );
+
+        // إذا انخفضت سرعة الإنترنت جداً يتم التحول تلقائياً للصوت فقط لحماية الاتصال من الانقطاع
+        await _engine.setRemoteSubscribeFallbackOption(
+          StreamFallbackOptions.streamFallbackOptionAudioOnly,
+        );
+      }
+
+      // الانضمام ونشر مسارات الصوت والكاميرا صراحةً
+      await _engine.joinChannel(
+        token: widget.token,
+        channelId: widget.channelId,
+        uid: 0,
+        options: ChannelMediaOptions(
+          clientRoleType: ClientRoleType.clientRoleBroadcaster,
+          channelProfile: ChannelProfileType.channelProfileCommunication,
+          publishCameraTrack: widget.isVideoCall,
+          publishMicrophoneTrack: true,
+          autoSubscribeAudio: true,
+          autoSubscribeVideo: widget.isVideoCall,
+        ),
+      );
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _errorMessage = "حدث خطأ أثناء الاتصال: $e";
+        });
+      }
     }
-
-    // 3. معالجة الأحداث وحصر المكالمة لشخصين فقط
-    _engine.registerEventHandler(
-      RtcEngineEventHandler(
-        onJoinChannelSuccess: (RtcConnection connection, int elapsed) {
-          setState(() => _localUserJoined = true);
-        },
-        onUserJoined: (RtcConnection connection, int remoteUid, int elapsed) {
-          // فحص أمني: إذا كان هناك شخص آخر في المكالمة بالفعل، لا تسمح للمزيد بالانضمام
-          if (_remoteUid != null) {
-            _showSecurityAlertAndLeave("هذه المكالمة محجوزة لشخصين فقط!");
-            return;
-          }
-
-          HapticFeedback.vibrate(); // تنبيه لحظة الرد
-          setState(() {
-            _remoteUid = remoteUid;
-          });
-          _startTimer();
-          _ringToneHapticTimer?.cancel();
-        },
-        onUserOffline: (RtcConnection connection, int remoteUid, UserOfflineReasonType reason) {
-          _leaveCall(notice: "انتهت المكالمة من الطرف الآخر");
-        },
-        onNetworkQuality: (RtcConnection connection, int uid, QualityType txQuality, QualityType rxQuality) {
-          if (uid == 0 || uid == _remoteUid) {
-            setState(() => _networkQuality = rxQuality);
-          }
-        },
-        onError: (ErrorCodeType err, String msg) {
-          debugPrint("Agora Error: $err -> $msg");
-        },
-      ),
-    );
-
-    // 4. الانضمام إلى القناة المحددة بواسطة الكود
-    await _engine.joinChannel(
-      token: "", // بدون توكن للتجربة السريعة والبيئات المؤقتة
-      channelId: widget.channelId,
-      uid: 0,
-      options: const ChannelMediaOptions(
-        clientRoleType: ClientRoleType.clientRoleBroadcaster,
-        autoSubscribeAudio: true,
-        autoSubscribeVideo: true,
-      ),
-    );
   }
 
   void _startTimer() {
     _callTimer = Timer.periodic(const Duration(seconds: 1), (_) {
-      setState(() => _secondsElapsed++);
+      if (mounted) setState(() => _secondsElapsed++);
     });
   }
 
@@ -495,13 +501,6 @@ class _CallScreenState extends State<CallScreen> with SingleTickerProviderStateM
     final m = (seconds ~/ 60).toString().padLeft(2, '0');
     final s = (seconds % 60).toString().padLeft(2, '0');
     return "$m:$s";
-  }
-
-  void _showSecurityAlertAndLeave(String msg) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(msg), backgroundColor: Colors.red),
-    );
-    _leaveCall();
   }
 
   Future<void> _leaveCall({String? notice}) async {
@@ -521,19 +520,16 @@ class _CallScreenState extends State<CallScreen> with SingleTickerProviderStateM
     Navigator.pop(context);
   }
 
-  // أيقونة مؤشر جودة الشبكة
   Widget _buildNetworkBadge() {
     Color color = Colors.greenAccent;
     String text = "شبكة ممتازة";
 
-    if (_networkQuality == QualityType.qualityPoor ||
-        _networkQuality == QualityType.qualityBad) {
+    if (_networkQuality == QualityType.qualityPoor || _networkQuality == QualityType.qualityBad) {
       color = Colors.orangeAccent;
       text = "الشبكة ضعيفة";
-    } else if (_networkQuality == QualityType.qualityVbad ||
-        _networkQuality == QualityType.qualityDown) {
+    } else if (_networkQuality == QualityType.qualityVbad || _networkQuality == QualityType.qualityDown) {
       color = Colors.redAccent;
-      text = "محاولة إنقاذ المكالمة";
+      text = "جودة منخفضة (حماية الاتصال)";
     }
 
     return Container(
@@ -564,29 +560,30 @@ class _CallScreenState extends State<CallScreen> with SingleTickerProviderStateM
 
   @override
   Widget build(BuildContext context) {
-    return WillPopScope(
-      onWillPop: () async {
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, result) async {
+        if (didPop) return;
         await _leaveCall();
-        return true;
       },
       child: Scaffold(
         backgroundColor: Colors.black,
         body: Stack(
           children: [
-            // 1. مساحة الفيديو الأساسية (الطرف البعيد أو واجهة الصوت)
+            // مساحة عرض الطرف البعيد أو شاشة الانتظار
             Center(child: _buildRemoteView()),
 
-            // 2. الكاميرا المحلية للطرف الحالي (Picture-in-Picture)
+            // الكاميرا المحلية للمتصل (نافذة مصغرة)
             if (widget.isVideoCall && !_isVideoDisabled && _localUserJoined)
               Positioned(
                 top: 50,
                 right: 20,
                 child: Container(
-                  width: 110,
-                  height: 160,
+                  width: 105,
+                  height: 155,
                   decoration: BoxDecoration(
                     borderRadius: BorderRadius.circular(16),
-                    border: Border.all(color: Colors.white24, width: 2),
+                    border: Border.all(color: Colors.white30, width: 2),
                     boxShadow: [
                       BoxShadow(
                         color: Colors.black.withOpacity(0.5),
@@ -604,7 +601,7 @@ class _CallScreenState extends State<CallScreen> with SingleTickerProviderStateM
                 ),
               ),
 
-            // 3. شريط المعلومات العلوي (الكود، المدة، والشبكة)
+            // شريط المعلومات العلوي
             Positioned(
               top: 50,
               left: 20,
@@ -622,20 +619,13 @@ class _CallScreenState extends State<CallScreen> with SingleTickerProviderStateM
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text(
-                          "كود الغرفة: ${widget.channelId}",
-                          style: const TextStyle(
-                            fontSize: 14,
-                            fontWeight: FontWeight.bold,
-                            color: Color(0xFF00E5FF),
-                          ),
+                          "غرفة: ${widget.channelId}",
+                          style: const TextStyle(fontWeight: FontWeight.bold, color: Color(0xFF00E5FF), fontSize: 14),
                         ),
                         if (_remoteUid != null)
                           Text(
                             _formatDuration(_secondsElapsed),
-                            style: const TextStyle(
-                              fontSize: 12,
-                              color: Colors.white70,
-                            ),
+                            style: const TextStyle(color: Colors.white70, fontSize: 12),
                           ),
                       ],
                     ),
@@ -646,7 +636,27 @@ class _CallScreenState extends State<CallScreen> with SingleTickerProviderStateM
               ),
             ),
 
-            // 4. أزرار التحكم بالاتصال
+            // شريط كشف الأخطاء التنبيهي إن وُجد
+            if (_errorMessage != null)
+              Positioned(
+                top: 130,
+                left: 20,
+                right: 20,
+                child: Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: Colors.redAccent.withOpacity(0.9),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Text(
+                    _errorMessage!,
+                    style: const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.bold),
+                    textAlign: TextAlign.center,
+                  ),
+                ),
+              ),
+
+            // شريط أزرار التحكم
             Positioned(
               bottom: 40,
               left: 0,
@@ -659,7 +669,6 @@ class _CallScreenState extends State<CallScreen> with SingleTickerProviderStateM
     );
   }
 
-  // عرض الطرف الآخر أو شاشة الانتظار مع مؤثرات الرنين
   Widget _buildRemoteView() {
     if (_remoteUid != null) {
       if (widget.isVideoCall) {
@@ -674,19 +683,19 @@ class _CallScreenState extends State<CallScreen> with SingleTickerProviderStateM
         return Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            const CircleAvatar(
-              radius: 60,
-              backgroundColor: Color(0xFF141C2E),
-              child: Icon(Icons.person, size: 70, color: Color(0xFF00E5FF)),
+            Container(
+              padding: const EdgeInsets.all(24),
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: const Color(0xFF131B2E),
+                border: Border.all(color: const Color(0xFF00E5FF).withOpacity(0.4), width: 2),
+              ),
+              child: const Icon(Icons.person, size: 70, color: Color(0xFF00E5FF)),
             ),
             const SizedBox(height: 20),
-            Text(
-              "متصل (صوت مشفر)",
-              style: TextStyle(
-                fontSize: 18,
-                color: Colors.white.withOpacity(0.8),
-                fontWeight: FontWeight.w600,
-              ),
+            const Text(
+              "مكالمة صوتية مشفرة",
+              style: TextStyle(fontSize: 18, color: Colors.white70, fontWeight: FontWeight.bold),
             ),
           ],
         );
@@ -701,42 +710,34 @@ class _CallScreenState extends State<CallScreen> with SingleTickerProviderStateM
               CurvedAnimation(parent: _pulseController, curve: Curves.easeInOut),
             ),
             child: Container(
-              padding: const EdgeInsets.all(28),
+              padding: const EdgeInsets.all(26),
               decoration: BoxDecoration(
                 shape: BoxShape.circle,
-                color: const Color(0xFF00E5FF).withOpacity(0.15),
-                border: Border.all(
-                  color: const Color(0xFF00E5FF).withOpacity(0.4),
-                  width: 3,
-                ),
+                color: const Color(0xFF00E5FF).withOpacity(0.12),
+                border: Border.all(color: const Color(0xFF00E5FF).withOpacity(0.4), width: 2),
               ),
-              child: const Icon(
-                Icons.ring_volume_rounded,
-                size: 60,
-                color: Color(0xFF00E5FF),
-              ),
+              child: const Icon(Icons.ring_volume_rounded, size: 55, color: Color(0xFF00E5FF)),
             ),
           ),
-          const SizedBox(height: 30),
-          const Text(
-            "بانتظار انضمام الطرف الآخر...",
-            style: TextStyle(fontSize: 17, color: Colors.white70),
+          const SizedBox(height: 25),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 30),
+            child: Text(
+              _statusMessage,
+              textAlign: TextAlign.center,
+              style: const TextStyle(fontSize: 15, color: Colors.white70),
+            ),
           ),
-          const SizedBox(height: 10),
+          const SizedBox(height: 12),
           Container(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+            padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 8),
             decoration: BoxDecoration(
               color: Colors.white10,
-              borderRadius: BorderRadius.circular(12),
+              borderRadius: BorderRadius.circular(14),
             ),
             child: Text(
-              "شارك الكود: ${widget.channelId}",
-              style: const TextStyle(
-                fontSize: 18,
-                letterSpacing: 2,
-                fontWeight: FontWeight.bold,
-                color: Color(0xFF00E5FF),
-              ),
+              "شارك الرمز: ${widget.channelId}",
+              style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Color(0xFF00E5FF), letterSpacing: 2),
             ),
           ),
         ],
@@ -744,18 +745,17 @@ class _CallScreenState extends State<CallScreen> with SingleTickerProviderStateM
     }
   }
 
-  // شريط التحكم السفلي بتأثيرات النقر والضغط
   Widget _buildControlsBar() {
     return Container(
-      margin: const EdgeInsets.symmetric(horizontal: 24),
-      padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 20),
+      margin: const EdgeInsets.symmetric(horizontal: 20),
+      padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
       decoration: BoxDecoration(
-        color: const Color(0xFF141C2E).withOpacity(0.85),
+        color: const Color(0xFF131B2E).withOpacity(0.9),
         borderRadius: BorderRadius.circular(35),
         border: Border.all(color: Colors.white12),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(0.6),
+            color: Colors.black.withOpacity(0.5),
             blurRadius: 20,
           )
         ],
@@ -763,11 +763,10 @@ class _CallScreenState extends State<CallScreen> with SingleTickerProviderStateM
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceEvenly,
         children: [
-          // كتم الصوت
-          _controlButton(
-            icon: _isMuted ? Icons.mic_off_rounded : Icons.mic_rounded,
+          // كتم الميكروفون
+          IconButton(
+            icon: Icon(_isMuted ? Icons.mic_off_rounded : Icons.mic_rounded),
             color: _isMuted ? Colors.redAccent : Colors.white,
-            bgColor: _isMuted ? Colors.redAccent.withOpacity(0.2) : Colors.white10,
             onPressed: () {
               HapticFeedback.lightImpact();
               setState(() => _isMuted = !_isMuted);
@@ -775,12 +774,11 @@ class _CallScreenState extends State<CallScreen> with SingleTickerProviderStateM
             },
           ),
 
-          // تشغيل/إيقاف الفيديو (في حال كانت مكالمة فيديو)
+          // تشغيل/إيقاف الكاميرا
           if (widget.isVideoCall)
-            _controlButton(
-              icon: _isVideoDisabled ? Icons.videocam_off_rounded : Icons.videocam_rounded,
+            IconButton(
+              icon: Icon(_isVideoDisabled ? Icons.videocam_off_rounded : Icons.videocam_rounded),
               color: _isVideoDisabled ? Colors.redAccent : Colors.white,
-              bgColor: _isVideoDisabled ? Colors.redAccent.withOpacity(0.2) : Colors.white10,
               onPressed: () {
                 HapticFeedback.lightImpact();
                 setState(() => _isVideoDisabled = !_isVideoDisabled);
@@ -788,48 +786,35 @@ class _CallScreenState extends State<CallScreen> with SingleTickerProviderStateM
               },
             ),
 
-          // تبديل الكاميرا
+          // تبديل الكاميرا (أمامية / خلفية)
           if (widget.isVideoCall && !_isVideoDisabled)
-            _controlButton(
-              icon: Icons.flip_camera_ios_rounded,
-              color: Colors.white,
-              bgColor: Colors.white10,
+            IconButton(
+              icon: const Icon(Icons.flip_camera_ios_rounded, color: Colors.white),
               onPressed: () {
                 HapticFeedback.selectionClick();
                 _engine.switchCamera();
-                setState(() => _isFrontCamera = !_isFrontCamera);
               },
             ),
 
+          // التبديل بين سماعة الأذن ومكبر الصوت
+          IconButton(
+            icon: Icon(_isSpeaker ? Icons.volume_up_rounded : Icons.phone_in_talk_rounded),
+            color: _isSpeaker ? const Color(0xFF00E5FF) : Colors.white70,
+            onPressed: () {
+              HapticFeedback.lightImpact();
+              setState(() => _isSpeaker = !_isSpeaker);
+              _engine.setEnableSpeakerphone(_isSpeaker);
+            },
+          ),
+
           // إنهاء المكالمة
-          _controlButton(
-            icon: Icons.call_end_rounded,
-            color: Colors.white,
-            bgColor: Colors.redAccent,
+          FloatingActionButton.small(
+            backgroundColor: Colors.redAccent,
+            elevation: 2,
             onPressed: () => _leaveCall(),
+            child: const Icon(Icons.call_end_rounded, color: Colors.white),
           ),
         ],
-      ),
-    );
-  }
-
-  Widget _controlButton({
-    required IconData icon,
-    required Color color,
-    required Color bgColor,
-    required VoidCallback onPressed,
-  }) {
-    return GestureDetector(
-      onTap: onPressed,
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 200),
-        width: 52,
-        height: 52,
-        decoration: BoxDecoration(
-          color: bgColor,
-          shape: BoxShape.circle,
-        ),
-        child: Icon(icon, color: color, size: 26),
       ),
     );
   }
