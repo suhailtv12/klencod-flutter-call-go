@@ -231,7 +231,7 @@ class _HomeScreenState extends State<HomeScreen> {
               ),
               const SizedBox(height: 25),
 
-              // زر توليد كود جديد للمتصل
+              // زر توليد كود جديد
               ElevatedButton.icon(
                 onPressed: () {
                   final newCode = _generateTempCode();
@@ -264,7 +264,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 textAlign: TextAlign.center,
                 style: const TextStyle(fontSize: 22, letterSpacing: 4, fontWeight: FontWeight.bold),
                 decoration: InputDecoration(
-                  hintText: "دخل الكود (مثال: 458920)",
+                  hintText: "أدخل الكود (مثال: 458920)",
                   hintStyle: const TextStyle(fontSize: 14, letterSpacing: 0, color: Colors.white30),
                   filled: true,
                   fillColor: const Color(0xFF131B2E),
@@ -290,7 +290,7 @@ class _HomeScreenState extends State<HomeScreen> {
               ),
               const SizedBox(height: 20),
 
-              // قسم التوكن (لحالات مشاريع App Certificate)
+              // قسم التوكن
               TextButton.icon(
                 onPressed: () => setState(() => _showTokenField = !_showTokenField),
                 icon: Icon(_showTokenField ? Icons.keyboard_arrow_up : Icons.security, size: 16, color: Colors.white38),
@@ -307,7 +307,7 @@ class _HomeScreenState extends State<HomeScreen> {
                     maxLines: 2,
                     style: const TextStyle(fontSize: 12),
                     decoration: InputDecoration(
-                      hintText: "الصق هنا الـ Token المشفر (إذا كان مشروعك يتطلب توكن)",
+                      hintText: "الصق هنا Agora Token (إذا كان مشروعك في وضع الأمان)",
                       hintStyle: const TextStyle(fontSize: 12, color: Colors.white24),
                       filled: true,
                       fillColor: const Color(0xFF131B2E),
@@ -324,7 +324,7 @@ class _HomeScreenState extends State<HomeScreen> {
 }
 
 // -------------------------------------------------------------
-// شاشة المكالمة: صوت/فيديو مع دعم الجودة التكيفية ومؤثرات الرنين
+// شاشة المكالمة: صوت/فيديو مع معالجة استثناءات الأجهزة
 // -------------------------------------------------------------
 class CallScreen extends StatefulWidget {
   final String channelId;
@@ -384,23 +384,29 @@ class _CallScreenState extends State<CallScreen> with SingleTickerProviderStateM
 
   Future<void> _initAgora() async {
     try {
+      // 1. إنشاء وتهيئة المحرك
       _engine = createAgoraRtcEngine();
       await _engine.initialize(const RtcEngineContext(
         appId: AGORA_APP_ID,
         channelProfile: ChannelProfileType.channelProfileCommunication,
       ));
 
+      // 2. تسجيل المستمعين
       _engine.registerEventHandler(
         RtcEngineEventHandler(
-          onJoinChannelSuccess: (RtcConnection connection, int elapsed) {
+          onJoinChannelSuccess: (RtcConnection connection, int elapsed) async {
             if (!mounted) return;
             setState(() {
               _localUserJoined = true;
               _statusMessage = "تم الانضمام للغرفة! بانتظار الطرف الآخر...";
             });
+            // تفعيل السبيكر بأمان بعد الانضمام الفعلي للغرفة
+            try {
+              await _engine.setEnableSpeakerphone(_isSpeaker);
+            } catch (_) {}
           },
           onUserJoined: (RtcConnection connection, int remoteUid, int elapsed) {
-            // أمان الغرفة: شخصان فقط (إذا دخل طرف ثالث يخرج تلقائياً)
+            // التحقق من أن المكالمة بين طرفين فقط
             if (_remoteUid != null) {
               _leaveCall(notice: "الغرفة محجوزة لشخصين فقط!");
               return;
@@ -427,7 +433,7 @@ class _CallScreenState extends State<CallScreen> with SingleTickerProviderStateM
             if (state == ConnectionStateType.connectionStateFailed) {
               if (mounted) {
                 setState(() {
-                  _errorMessage = "فشل الاتصال ($reason). تأكد من صحة التوكن أو إعدادات المشروع!";
+                  _errorMessage = "فشل الاتصال ($reason). تأكد من صحة التوكن أو حالة الغرفة!";
                 });
               }
             }
@@ -436,7 +442,7 @@ class _CallScreenState extends State<CallScreen> with SingleTickerProviderStateM
             if (err == ErrorCodeType.errInvalidToken || err == ErrorCodeType.errTokenExpired) {
               if (mounted) {
                 setState(() {
-                  _errorMessage = "مشروعك يتطلب Token! يرجى إدخال التوكن في الشاشة الرئيسية أو تعطيل App Certificate في Agora.";
+                  _errorMessage = "مشروعك يتطلب Token! يرجى إدخال التوكن في الشاشة الرئيسية أو إيقاف App Certificate في Agora.";
                 });
               }
             }
@@ -444,38 +450,38 @@ class _CallScreenState extends State<CallScreen> with SingleTickerProviderStateM
         ),
       );
 
-      // تفعيل الصوت وضبط السماعة الخارجية افتراضياً
+      // 3. تفعيل الصوت واختيار السبيكر كافتراضي (آمن قبل الاتصال)
       await _engine.enableAudio();
-      await _engine.setEnableSpeakerphone(_isSpeaker);
+      try {
+        await _engine.setDefaultAudioRouteToSpeakerphone(_isSpeaker);
+      } catch (_) {}
 
-      // تفعيل الكاميرا وإعدادات الجودة التكيفية لمنع انقطاع المكالمة
+      // 4. تفعيل الكاميرا إن كانت مكالمة فيديو
       if (widget.isVideoCall) {
-        await _engine.enableVideo();
-        await _engine.startPreview();
-
-        await _engine.setVideoEncoderConfiguration(
-          const VideoEncoderConfiguration(
-            dimensions: VideoDimensions(width: 640, height: 360),
-            frameRate: 15,
-            bitrate: 0,
-            degradationPreference: DegradationPreference.maintainBalanced,
-          ),
-        );
-
-        // إذا انخفضت سرعة الإنترنت جداً يتم التحول تلقائياً للصوت فقط لحماية الاتصال من الانقطاع
-        await _engine.setRemoteSubscribeFallbackOption(
-          StreamFallbackOptions.streamFallbackOptionAudioOnly,
-        );
+        try {
+          await _engine.enableVideo();
+          await _engine.startPreview();
+          await _engine.setVideoEncoderConfiguration(
+            const VideoEncoderConfiguration(
+              dimensions: VideoDimensions(width: 640, height: 360),
+              frameRate: 15,
+              bitrate: 0,
+              degradationPreference: DegradationPreference.maintainBalanced,
+            ),
+          );
+        } catch (e) {
+          debugPrint("Video init warning: $e");
+        }
       }
 
-      // الانضمام ونشر مسارات الصوت والكاميرا صراحةً
+      // 5. الانضمام إلى القناة
       await _engine.joinChannel(
         token: widget.token,
         channelId: widget.channelId,
         uid: 0,
         options: ChannelMediaOptions(
           clientRoleType: ClientRoleType.clientRoleBroadcaster,
-          channelProfile: ChannelProfileType.channelProfileCommunication,
+          channelProfileType: ChannelProfileType.channelProfileCommunication,
           publishCameraTrack: widget.isVideoCall,
           publishMicrophoneTrack: true,
           autoSubscribeAudio: true,
@@ -529,7 +535,7 @@ class _CallScreenState extends State<CallScreen> with SingleTickerProviderStateM
       text = "الشبكة ضعيفة";
     } else if (_networkQuality == QualityType.qualityVbad || _networkQuality == QualityType.qualityDown) {
       color = Colors.redAccent;
-      text = "جودة منخفضة (حماية الاتصال)";
+      text = "جودة منخفضة";
     }
 
     return Container(
@@ -570,10 +576,10 @@ class _CallScreenState extends State<CallScreen> with SingleTickerProviderStateM
         backgroundColor: Colors.black,
         body: Stack(
           children: [
-            // مساحة عرض الطرف البعيد أو شاشة الانتظار
+            // مساحة عرض الطرف البعيد
             Center(child: _buildRemoteView()),
 
-            // الكاميرا المحلية للمتصل (نافذة مصغرة)
+            // كاميرا المستخدم الحالية (نافذة مصغرة)
             if (widget.isVideoCall && !_isVideoDisabled && _localUserJoined)
               Positioned(
                 top: 50,
@@ -636,7 +642,7 @@ class _CallScreenState extends State<CallScreen> with SingleTickerProviderStateM
               ),
             ),
 
-            // شريط كشف الأخطاء التنبيهي إن وُجد
+            // شريط عرض الخطأ إن وجد
             if (_errorMessage != null)
               Positioned(
                 top: 130,
@@ -656,7 +662,7 @@ class _CallScreenState extends State<CallScreen> with SingleTickerProviderStateM
                 ),
               ),
 
-            // شريط أزرار التحكم
+            // أزرار التحكم
             Positioned(
               bottom: 40,
               left: 0,
@@ -701,7 +707,6 @@ class _CallScreenState extends State<CallScreen> with SingleTickerProviderStateM
         );
       }
     } else {
-      // شاشة انتظار الطرف الآخر مع حركة نبضية
       return Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
@@ -763,7 +768,6 @@ class _CallScreenState extends State<CallScreen> with SingleTickerProviderStateM
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceEvenly,
         children: [
-          // كتم الميكروفون
           IconButton(
             icon: Icon(_isMuted ? Icons.mic_off_rounded : Icons.mic_rounded),
             color: _isMuted ? Colors.redAccent : Colors.white,
@@ -773,8 +777,6 @@ class _CallScreenState extends State<CallScreen> with SingleTickerProviderStateM
               _engine.muteLocalAudioStream(_isMuted);
             },
           ),
-
-          // تشغيل/إيقاف الكاميرا
           if (widget.isVideoCall)
             IconButton(
               icon: Icon(_isVideoDisabled ? Icons.videocam_off_rounded : Icons.videocam_rounded),
@@ -785,8 +787,6 @@ class _CallScreenState extends State<CallScreen> with SingleTickerProviderStateM
                 _engine.muteLocalVideoStream(_isVideoDisabled);
               },
             ),
-
-          // تبديل الكاميرا (أمامية / خلفية)
           if (widget.isVideoCall && !_isVideoDisabled)
             IconButton(
               icon: const Icon(Icons.flip_camera_ios_rounded, color: Colors.white),
@@ -795,19 +795,17 @@ class _CallScreenState extends State<CallScreen> with SingleTickerProviderStateM
                 _engine.switchCamera();
               },
             ),
-
-          // التبديل بين سماعة الأذن ومكبر الصوت
           IconButton(
             icon: Icon(_isSpeaker ? Icons.volume_up_rounded : Icons.phone_in_talk_rounded),
             color: _isSpeaker ? const Color(0xFF00E5FF) : Colors.white70,
-            onPressed: () {
+            onPressed: () async {
               HapticFeedback.lightImpact();
               setState(() => _isSpeaker = !_isSpeaker);
-              _engine.setEnableSpeakerphone(_isSpeaker);
+              try {
+                await _engine.setEnableSpeakerphone(_isSpeaker);
+              } catch (_) {}
             },
           ),
-
-          // إنهاء المكالمة
           FloatingActionButton.small(
             backgroundColor: Colors.redAccent,
             elevation: 2,
