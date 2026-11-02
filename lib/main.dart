@@ -264,7 +264,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 textAlign: TextAlign.center,
                 style: const TextStyle(fontSize: 22, letterSpacing: 4, fontWeight: FontWeight.bold),
                 decoration: InputDecoration(
-                  hintText: "أدخل الكود (مثال: 458920)",
+                  hintText: "دخل الكود (مثال: 458920)",
                   hintStyle: const TextStyle(fontSize: 14, letterSpacing: 0, color: Colors.white30),
                   filled: true,
                   fillColor: const Color(0xFF131B2E),
